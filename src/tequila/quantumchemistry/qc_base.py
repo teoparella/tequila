@@ -45,9 +45,10 @@ class QuantumChemistryBase:
                  transformation: typing.Union[str, typing.Callable] = None,
                  active_orbitals: list = None,
                  frozen_orbitals: list = None,
-                 orbital_type: str = None,
                  reference_orbitals: list = None,
-                 orbitals: list = None,
+                 orbitals: list = None, 
+                 graph=None,
+                 LadderPermutation=None,
                  *args,
                  **kwargs):
         """
@@ -62,7 +63,7 @@ class QuantumChemistryBase:
         args
         kwargs
         """
-
+    
         self.parameters = parameters
         n_electrons = parameters.n_electrons
         if "n_electrons" in kwargs:
@@ -72,14 +73,9 @@ class QuantumChemistryBase:
             reference_orbitals = [i for i in range(n_electrons // 2)]
         self._reference_orbitals = reference_orbitals
         
-        if orbital_type is None:
-            orbital_type = "unknown"
-
-        # no frozen core with native orbitals (i.e. atomics)
-        overriding_freeze_instruction = orbital_type is not None and orbital_type.lower() == "native"
         # determine frozen core automatically if set
         # only if molecule is computed from scratch and not passed down from above
-        overriding_freeze_instruction = overriding_freeze_instruction or n_electrons != parameters.n_electrons
+        overriding_freeze_instruction = n_electrons != parameters.n_electrons
         overriding_freeze_instruction = overriding_freeze_instruction or frozen_orbitals is not None
         if not overriding_freeze_instruction and self.parameters.frozen_core:
             n_core_electrons = self.parameters.get_number_of_core_electrons()
@@ -93,14 +89,12 @@ class QuantumChemistryBase:
         else:
             self.integral_manager = self.initialize_integral_manager(active_orbitals=active_orbitals,
                                                                      reference_orbitals=reference_orbitals,
-                                                                     orbitals=orbitals, frozen_orbitals=frozen_orbitals, orbital_type=orbital_type, *args,
+                                                                     orbitals=orbitals, frozen_orbitals=frozen_orbitals, *args,
                                                                      **kwargs)
-        
-        if orbital_type is not None and orbital_type.lower() == "native":
-            self.integral_manager.transform_to_native_orbitals()
-
-
+        self.graph=graph
+        self.LadderPermutation=LadderPermutation
         self.transformation = self._initialize_transformation(transformation=transformation, *args, **kwargs)
+        self.transformation_string=transformation
 
         self._rdm1 = None
         self._rdm2 = None
@@ -134,7 +128,10 @@ class QuantumChemistryBase:
             transformation = transformation.replace("_", "").replace("-", "").upper()
             encodings = known_encodings()
             if transformation in encodings:
-                transformation = encodings[transformation](**trafo_args)
+                if transformation == 'TERNARYTREE':
+                    transformation = encodings[transformation](**trafo_args,graph=self.graph,LadderPermutation=self.LadderPermutation)
+                else:
+                    transformation = encodings[transformation](**trafo_args)
             else:
                 raise TequilaException(
                     "Unkown Fermion-to-Qubit encoding {}. Try something like: {}".format(transformation,
@@ -312,75 +309,6 @@ class QuantumChemistryBase:
                     indices, self.n_orbitals))
         return gates.QubitExcitation(angle=angle, target=target, assume_real=assume_real, control=control,
                                      compile_options=compile_options)
-    
-    def UR(self,i,j,angle=None, label=None, control=None, assume_real=True, *args, **kwargs):
-        """
-        Convenience function for orbital rotation circuit (rotating spatial orbital i and j) with standard naming of variables
-        See arXiv:2207.12421 Eq.6 for UR(0,1)
-        Parameters:
-        ----------
-            indices:
-                tuple of two spatial(!) orbital indices
-            angle:
-                Numeric or hashable type or tequila objective. Default is None and results
-                in automatic naming as ("R",i,j)
-            label:
-                can be passed instead of angle to have auto-naming with label ("R",i,j,label)
-                useful for repreating gates with individual variables
-            control:
-                List of possible control qubits
-            assume_real:
-                Assume that the wavefunction will always stay real.
-                Will reduce potential gradient costs by a factor of 2
-        """
-        i,j = self.format_excitation_indices([(i,j)])[0]
-        if angle is None:
-            if label is None:
-                angle = Variable(name=("R",i,j))*numpy.pi
-            else:
-                angle = Variable(name=("R",i,j,label))*numpy.pi
-            
-        circuit = self.make_excitation_gate(indices=[(2*i,2*j)], angle=angle, assume_real=assume_real, control=control, *args, **kwargs)
-        circuit+= self.make_excitation_gate(indices=[(2*i+1,2*j+1)], angle=angle, assume_real=assume_real, control=control, *args, **kwargs)
-        return circuit
-    
-    def UC(self,i,j,angle=None, label=None, control=None, assume_real=True, *args, **kwargs):
-        """
-        Convenience function for orbital correlator circuit (correlating spatial orbital i and j through a spin-paired double excitation) with standard naming of variables
-        See arXiv:2207.12421 Eq.22 for UC(1,2)
-        
-        Parameters:
-        ----------
-            indices:
-                tuple of two spatial(!) orbital indices
-            angle:
-                Numeric or hashable type or tequila objective. Default is None and results
-                in automatic naming as ("R",i,j)
-            label:
-                can be passed instead of angle to have auto-naming with label ("R",i,j,label)
-                useful for repreating gates with individual variables
-            control:
-                List of possible control qubits
-            assume_real:
-                Assume that the wavefunction will always stay real.
-                Will reduce potential gradient costs by a factor of 2
-        """
-        i,j = self.format_excitation_indices([(i,j)])[0]
-        if angle is None:
-            if label is None:
-                angle = Variable(name=("C",i,j))*numpy.pi
-            else:
-                angle = Variable(name=("C",i,j,label))*numpy.pi
-        if "jordanwigner" in self.transformation.name.lower() and not self.transformation.up_then_down:
-            # for JW we can use the optimized form shown in arXiv:2207.12421 Eq.22
-            return gates.QubitExcitation(target=[2*i,2*j,2*i+1,2*j+1], angle=angle, control=control, assume_real=assume_real, *args, **kwargs)
-        else:
-            return self.make_excitation_gate(indices=[(2*i,2*j),(2*i+1,2*j+1)], angle=angle, control=control, assume_real=assume_real, *args, **kwargs)
-
-    def make_orbital_rotation_gate(self, indices:tuple, *args, **kwargs):
-        # backward compatibility
-        return self.UR(indices[0],indices[1], *args, **kwargs)
-
 
     def make_excitation_gate(self, indices, angle, control=None, assume_real=True, **kwargs):
         """
@@ -534,12 +462,8 @@ class QuantumChemistryBase:
         integral_manager.transform_orbitals(U=orbital_coefficients)
         result = QuantumChemistryBase(parameters=self.parameters, integral_manager=integral_manager)
         return result
-    
+
     def orthonormalize_basis_orbitals(self):
-        # backward compatibility
-        return self.use_native_orbitals()
-    
-    def use_native_orbitals(self, inplace=False):
         """
         Returns
         -------
@@ -550,14 +474,11 @@ class QuantumChemistryBase:
             warnings.warn("orthonormalize_basis_orbitals: active space is set and might lead to inconsistent behaviour", TequilaWarning)
 
         # can not be an instance of a specific backend (otherwise we get inconsistencies with classical methods in the backend)
-        if inplace:
-            self.integral_manager.transform_to_native_orbitals()
-            return self
-        else:
-            integral_manager = copy.deepcopy(self.integral_manager)
-            integral_manager.transform_to_native_orbitals()
-            result = QuantumChemistryBase(parameters=self.parameters, integral_manager=integral_manager, orbital_type="native")
-            return result
+        integral_manager = copy.deepcopy(self.integral_manager)
+        c = integral_manager.get_orthonormalized_orbital_coefficients()
+        integral_manager.orbital_coefficients=c
+        result = QuantumChemistryBase(parameters=self.parameters, integral_manager=integral_manager)
+        return result
 
 
     def do_make_molecule(self, *args, **kwargs):
@@ -638,10 +559,20 @@ class QuantumChemistryBase:
         of_molecule = self.make_molecule()
         fop = of_molecule.get_molecular_hamiltonian()
         fop = openfermion.transforms.get_fermion_operator(fop)
+        
+        if self.transformation_string == 'TernaryTree':
+                qop = self.transformation(fop)
+        else:
+                qop = self.transformation(fop)
+                
+        '''
         try:
-            qop = self.transformation(fop)
+            if self.transformation_string == 'TernaryTree':
+                qop= self.transformation(fop,self.graph)
+            else:
+                qop = self.transformation(fop)
         except TypeError:
-            qop = self.transformation(openfermion.transforms.get_interaction_operator(fop))
+            qop = self.transformation(openfermion.transforms.get_interaction_operator(fop))'''
         qop.is_hermitian()
         return qop
 
@@ -1945,6 +1876,6 @@ class QuantumChemistryBase:
 
         result += "\nBasis\n"
         result += str(self.integral_manager)
-        result += "\nmore information with: self.print_basis_info()\n"
+        result += "\nmore information with: self.print_basis_info()"
 
         return result
