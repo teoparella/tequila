@@ -7,6 +7,9 @@ from tequila.circuit.gates import X
 from tequila.hamiltonian.qubit_hamiltonian import QubitHamiltonian
 import openfermion
 
+from .TernaryTreeTransformation.TernaryTree import *
+
+
 def known_encodings():
     # convenience for testing and I/O
     encodings= {
@@ -14,7 +17,8 @@ def known_encodings():
         "BravyiKitaev":BravyiKitaev,
         "BravyiKitaevFast": BravyiKitaevFast,
         "BravyiKitaevTree": BravyiKitaevTree,
-        "TaperedBravyiKitaev": TaperedBravyKitaev
+        "TaperedBravyiKitaev": TaperedBravyKitaev,
+        "TernaryTree":TernaryTree
     }
     # aliases
     encodings = {**encodings,
@@ -36,10 +40,12 @@ class EncodingBase:
         else:
             return prefix+type(self).__name__
 
-    def __init__(self, n_electrons, n_orbitals, up_then_down=False, *args, **kwargs):
+    def __init__(self, n_electrons, n_orbitals, up_then_down=False, graph=None, LadderPermutation=None,  *args, **kwargs):
         self.n_electrons = n_electrons
         self.n_orbitals = n_orbitals
         self.up_then_down = up_then_down
+        self.graph=graph
+        self.LadderPermutation=LadderPermutation
 
     def __call__(self, fermion_operator:openfermion.FermionOperator, *args, **kwargs) -> QubitHamiltonian:
         """
@@ -48,10 +54,24 @@ class EncodingBase:
         :return:
             The openfermion QubitOperator of this class ecoding
         """
+        
         if self.up_then_down:
             op = openfermion.reorder(operator=fermion_operator, order_function=openfermion.up_then_down, num_modes=2*self.n_orbitals)
         else:
             op = fermion_operator
+        
+        #Extra for saving the fermion operator #################################################################################################################################3
+        saving=False
+        if saving==True:
+            from openfermion.ops import FermionOperator
+            openfermion.utils.save_operator(
+                op,
+                file_name='LiH_1.5_sto3g.data',
+                data_directory='/home/teoparella/Academic/ICFO/Qchem_project/GroundState_entanglement/Qubits_Mutual_Info/FermionHamiltonians/',
+                allow_overwrite=False,
+                plain_text=False
+            )
+        #######################################################################################################################################################################3
 
         fop = self.do_transform(fermion_operator=op, *args, **kwargs)
         fop.compress()
@@ -211,4 +231,8 @@ class TaperedBravyKitaev(EncodingBase):
         key = [key[i] for i in active_qubits]
         return key
 
+    
+class TernaryTree(EncodingBase):    
+    def do_transform(self, fermion_operator:openfermion.FermionOperator, *args, **kwargs) -> openfermion.QubitOperator:
+        return Ternary_Tree(fermion_operator, graph=self.graph, LadderPermutation=self.LadderPermutation, *args, **kwargs)
 
